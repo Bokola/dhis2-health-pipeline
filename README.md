@@ -216,6 +216,20 @@ Use cases:
 
 ---
 
+
+---
+
+### Task Consolidation & Engineering Design Choices (7 vs. 8 Modules)
+
+While early design blueprints for this pipeline suggested an 8-task layout, the final production implementation consciously consolidates the execution workflow into **7 high-cohesion modules**. This was done to enforce clean separation of concerns and eliminate unnecessary intermediate disk I/O bottlenecks:
+
+* **The Merger (Analytical Summaries & Matrix Aggregations):** Initial specifications separated the time-series windowing steps (Month-over-Month deltas, 3-month rolling averages) and the high-level reporting matrices (the pivoted data element coverage grid) into two distinct tasks. We merged these closely related operations into the final **Gold-tier processing modules (Task 06 and Task 07)**.
+* **Elimination of Redundant Shared I/O Boundaries:** A strict 8-task breakdown would have forced the pipeline to write transient datasets to disk, only to immediately read them back into cluster memory. Combining these operations allows them to share an uninterrupted memory lineage.
+* **Pipeline Performance Optimization:** Consolidating these steps allows Apache Spark's Catalyst Optimizer to build an efficient, unbroken Directed Acyclic Graph (DAG). This maximizes execution performance by pipelining transformations together in memory and eliminating redundant cross-node network shuffles.
+
+The complete structural map of these 7 optimized execution blocks is fully detailed in the Pipeline Workflow Architecture diagram above.
+---
+
 # Installation
 
 ## Prerequisites
