@@ -255,7 +255,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 Clone repository:
 
 ```bash
-git clone <repo-url>
+git clone dhis2-health-pipeline.git
 cd dhis2-health-data-pipeline
 ```
 
