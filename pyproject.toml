@@ -9,6 +9,11 @@ dependencies = [
     "faker>=24.0.0",
     "numpy>=1.24.0",
     "pytest>=9.0.3",
+    # ask-the-data assistant
+    "anthropic>=0.40.0",
+    "duckdb>=1.1.0",
+    "sqlglot>=25.0.0",
+    "pyyaml>=6.0",
 ]
 
 [tool.uv]

@@ -46,7 +46,8 @@ def run_task_04(df_spatial: DataFrame, df_prog_raw: DataFrame) -> DataFrame:
         .withColumn("value_bool", when(col("value") == "true", True).when(col("value") == "false", False).otherwise(None)) \
         .withColumn(
             "cast_value",
-            when(col("valueType").isin("NUMBER", "INTEGER", "INT"), col("value").cast("double"))
+            # dhis2 numeric types include INTEGER_ZERO_OR_POSITIVE, INTEGER_POSITIVE, PERCENTAGE etc
+            when(col("valueType").startswith("INTEGER") | col("valueType").isin("NUMBER", "INT", "PERCENTAGE", "UNIT_INTERVAL"), col("value").cast("double"))
             .when(col("valueType") == "BOOLEAN", when(col("value") == "true", 1.0).otherwise(0.0))
             .otherwise(lit(None).cast("double"))
         ) \

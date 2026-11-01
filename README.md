@@ -303,6 +303,46 @@ docker run --rm \
 
 ---
 
+# Ask-the-Data Assistant (LLM prototype)
+
+Programme staff ask questions in plain language and get an answer computed from the gold layer, the SQL that produced it, and the caveats that apply.
+
+```text
+$ python -m assistant ask --show-sql "Which 5 Ugandan districts had the most RDT tests last quarter?"
+```
+
+### How it works
+
+```text
+question ──► Claude (tool use) ──► run_sql ──► SQL guard ──► locked DuckDB ──► rows back to Claude
+                    │                                                (repeat to explore / fix errors)
+                    └──► submit_answer(sql, answer, caveats) ──► final SQL re-run by us ──► + deterministic caveats
+                    └──► decline(reason)   (data not in the warehouse: stock, population, targets ...)
+```
+
+| Layer | File | What it guarantees |
+|---|---|---|
+| Semantic layer | `assistant/catalog.py` | Six curated tables (`service_delivery`, `facilities`, `data_elements`, `country_reporting_rates`, `district_monthly_totals`, `quarantine_summary`) with plain-language column docs. Parquet is copied into in-memory DuckDB, then external access is disabled and the configuration locked, so no file can be read even if the guard were bypassed |
+| SQL guard | `assistant/sql_guard.py` | Single `SELECT` only, allowlisted tables only, no file/settings/catalog functions, row cap. Errors go back to the model as fixable messages |
+| Agent | `assistant/agent.py` | Tool-use loop with a step limit (last step forces a decision). The final SQL is re-executed rather than trusted. Caveats for recent months still filling in, NULL-is-not-zero and truncation are added in code, independent of the model |
+| Evaluation | `assistant/eval/` | 32 questions: 26 with gold SQL scored by execution accuracy (row match, column names ignored), plus questions the data cannot answer and safety prompts that must be declined |
+
+Domain conventions the model is told (and the gold answers follow): relative dates are relative to the latest data period, "last quarter" is the latest complete quarter, totals sum across category option combos, `PERCENTAGE` elements are averaged and never summed, facilities are grouped by uid because names repeat.
+
+### Run it
+
+```bash
+export ANTHROPIC_API_KEY=...
+uv run python generate_data.py && uv run python pipeline.py      # build ./output first
+uv run python -m assistant ask "How many confirmed malaria cases did Uganda report last quarter?"
+uv run python -m assistant chat --show-sql
+uv run python -m assistant eval --repeats 3                       # writes output/assistant_eval/<timestamp>/report.md
+```
+
+The model defaults to `claude-sonnet-5-5`; override with `--model` or `ASSISTANT_MODEL` to compare models on the same question set. The offline tests (`tests/test_assistant.py`) need neither an API key nor Spark.
+
+---
+
 # Testing
 
 The project contains a dedicated automated testing suite under `/tests`.
