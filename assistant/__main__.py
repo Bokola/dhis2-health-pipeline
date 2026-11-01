@@ -4,7 +4,12 @@
     python -m assistant chat
     python -m assistant eval [--only q03,q28] [--repeats 3]
 
-needs ANTHROPIC_API_KEY. model defaults to $ASSISTANT_MODEL or claude-sonnet-5-5
+claude (default): needs ANTHROPIC_API_KEY. model defaults to $ASSISTANT_MODEL or claude-sonnet-5-5
+
+open-weight models through any openai-compatible server (ollama, vllm, llama.cpp, lm studio):
+    python -m assistant --provider openai --model qwen2.5:14b ask "..."
+    python -m assistant --provider openai --base-url http://localhost:8000/v1 --model Qwen/Qwen2.5-14B-Instruct eval
+base url defaults to $OPENAI_BASE_URL or http://localhost:11434/v1 (ollama)
 """
 from __future__ import annotations
 
@@ -46,7 +51,11 @@ def _fmt(v) -> str:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m assistant")
     p.add_argument("--output-dir", default="./output", help="pipeline output directory")
-    p.add_argument("--model", default=DEFAULT_MODEL)
+    p.add_argument("--provider", choices=["anthropic", "openai"],
+                   default=os.environ.get("ASSISTANT_PROVIDER", "anthropic"),
+                   help="anthropic = claude api; openai = any openai-compatible server, e.g. ollama")
+    p.add_argument("--model", default=None, help="model name for the chosen provider")
+    p.add_argument("--base-url", default=None, help="openai-compatible server url (provider=openai)")
     sub = p.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("ask")
     a.add_argument("question", nargs="+")
@@ -58,15 +67,25 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--repeats", type=int, default=1)
     args = p.parse_args(argv)
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("set ANTHROPIC_API_KEY first (https://console.anthropic.com)", file=sys.stderr)
-        return 2
+    if args.provider == "anthropic":
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            print("set ANTHROPIC_API_KEY first, or use --provider openai with a local model", file=sys.stderr)
+            return 2
+        client, model = None, args.model or DEFAULT_MODEL
+    else:
+        from assistant.llm_openai import OpenAICompatClient
+        client = OpenAICompatClient(base_url=args.base_url)
+        model = args.model or os.environ.get("ASSISTANT_MODEL", "qwen2.5:14b")
+        problem = client.preflight(model)
+        if problem:
+            print(problem, file=sys.stderr)
+            return 2
     try:
         con, ctx = build_connection(args.output_dir)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
-    bot = Assistant(con, ctx, model=args.model)
+    bot = Assistant(con, ctx, client=client, model=model)
 
     if args.cmd == "ask":
         print_answer(bot.ask(" ".join(args.question)), args.show_sql)

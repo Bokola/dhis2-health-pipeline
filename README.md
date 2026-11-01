@@ -339,7 +339,24 @@ uv run python -m assistant chat --show-sql
 uv run python -m assistant eval --repeats 3                       # writes output/assistant_eval/<timestamp>/report.md
 ```
 
-The model defaults to `claude-sonnet-5-5`; override with `--model` or `ASSISTANT_MODEL` to compare models on the same question set. The offline tests (`tests/test_assistant.py`) need neither an API key nor Spark.
+The model defaults to `claude-sonnet-5-5`; override with `--model` or `ASSISTANT_MODEL` to compare models on the same question set.
+
+### Open-weight models (no API key)
+
+`assistant/llm_openai.py` lets the same agent, guard and eval run on any OpenAI-compatible server: Ollama, vLLM, llama.cpp `llama-server` or LM Studio. The model needs tool (function) calling support.
+
+```bash
+# ollama, on a laptop
+ollama pull qwen2.5:14b            # ~9 GB; qwen2.5:7b if you have under 16 GB RAM
+uv run python -m assistant --provider openai --model qwen2.5:14b ask "Which country had the lowest reporting rate last month?"
+uv run python -m assistant --provider openai --model qwen2.5:14b eval
+
+# vllm on a gpu box
+vllm serve Qwen/Qwen2.5-14B-Instruct --enable-auto-tool-choice --tool-call-parser hermes
+uv run python -m assistant --provider openai --base-url http://localhost:8000/v1 --model Qwen/Qwen2.5-14B-Instruct eval
+```
+
+Environment variables work too: `ASSISTANT_PROVIDER=openai`, `ASSISTANT_MODEL`, `OPENAI_BASE_URL`, and `OPENAI_API_KEY` for hosted OpenAI-compatible providers. Because the eval is identical across providers, the reports give a like-for-like comparison of hosted and open-weight models. The offline tests (`tests/test_assistant.py`) need neither an API key nor Spark.
 
 ---
 
