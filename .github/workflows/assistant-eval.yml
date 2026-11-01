@@ -1,0 +1,156 @@
+name: Ask-the-data assistant eval
+
+# run from the actions tab: "run workflow", pick a backend and (optionally) a model
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: "where the model runs"
+        type: choice
+        options: [github-models, ollama, anthropic]
+        default: github-models
+      model:
+        description: "model id. github-models: 'auto' picks a free low-tier tool-calling model; ollama: e.g. qwen2.5:7b; anthropic: e.g. claude-sonnet-5-5"
+        type: string
+        default: auto
+      only:
+        description: "comma-separated question ids, empty = all 32"
+        type: string
+        default: ""
+      repeats:
+        description: "runs per question (github-models free quota: keep at 1)"
+        type: string
+        default: "1"
+  # uncomment for a weekly run on github models
+  # schedule:
+  #   - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+  models: read          # lets GITHUB_TOKEN call github models, no secret needed
+
+concurrency:
+  group: assistant-eval  # one run at a time so runs don't share a rate limit
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300   # ollama on cpu is slow; github models and claude finish in minutes
+    env:
+      BACKEND: ${{ inputs.backend || 'github-models' }}
+      MODEL_INPUT: ${{ inputs.model || 'auto' }}
+      ONLY: ${{ inputs.only }}
+      REPEATS: ${{ inputs.repeats || '1' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: |
+          uv python install 3.10
+          uv sync
+
+      - name: Build the gold layer
+        run: |
+          PYSPARK_PYTHON=$(uv run python -c "import sys; print(sys.executable)")
+          export PYSPARK_PYTHON
+          export PYSPARK_DRIVER_PYTHON=$PYSPARK_PYTHON
+          uv run python generate_data.py --out ./data
+          uv run python pipeline.py --data-dir ./data --output-dir ./output
+
+      # ---------- backend: github models ----------
+      - name: Configure GitHub Models
+        if: env.BACKEND == 'github-models'
+        env:
+          GITHUB_TOKEN: ${{ secrets.MODELS_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          MODEL=$(uv run python -m assistant.github_models --model "$MODEL_INPUT")
+          echo "using $MODEL"
+          {
+            echo "ASSISTANT_PROVIDER=openai"
+            echo "ASSISTANT_MODEL=$MODEL"
+            echo "OPENAI_BASE_URL=https://models.github.ai/inference"
+            # free tier: ~15 requests/min and 8k input tokens per request
+            echo "ASSISTANT_MIN_INTERVAL=5"
+            echo "ASSISTANT_ROWS_TO_MODEL=15"
+            echo "ASSISTANT_MAX_RESULT_CHARS=4000"
+          } >> "$GITHUB_ENV"
+          echo "OPENAI_API_KEY=$GITHUB_TOKEN" >> "$GITHUB_ENV"
+          {
+            echo "### Tool-calling models on GitHub Models"
+            uv run python -m assistant.github_models --list
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------- backend: ollama inside the runner (open weights, cpu only) ----------
+      - name: Cache Ollama models
+        if: env.BACKEND == 'ollama'
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-${{ inputs.model == 'auto' && 'qwen2.5:7b' || inputs.model }}
+
+      - name: Start Ollama
+        if: env.BACKEND == 'ollama'
+        run: |
+          MODEL="$MODEL_INPUT"; [ "$MODEL" = "auto" ] && MODEL="qwen2.5:7b"
+          curl -fsSL https://ollama.com/install.sh | sh
+          sudo systemctl stop ollama 2>/dev/null || true
+          export OLLAMA_MODELS="$HOME/.ollama/models"
+          nohup ollama serve > ollama.log 2>&1 &
+          for _ in $(seq 1 30); do curl -sf http://localhost:11434/api/tags >/dev/null && break; sleep 2; done
+          ollama pull "$MODEL"
+          {
+            echo "ASSISTANT_PROVIDER=openai"
+            echo "ASSISTANT_MODEL=$MODEL"
+            echo "OPENAI_BASE_URL=http://localhost:11434/v1"
+            echo "ASSISTANT_HTTP_TIMEOUT=900"
+          } >> "$GITHUB_ENV"
+
+      # ---------- backend: claude ----------
+      - name: Configure Claude
+        if: env.BACKEND == 'anthropic'
+        env:
+          KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then echo "::error::add an ANTHROPIC_API_KEY repository secret"; exit 1; fi
+          MODEL="$MODEL_INPUT"; [ "$MODEL" = "auto" ] && MODEL="claude-sonnet-5-5"
+          {
+            echo "ASSISTANT_PROVIDER=anthropic"
+            echo "ASSISTANT_MODEL=$MODEL"
+            echo "ANTHROPIC_API_KEY=$KEY"
+          } >> "$GITHUB_ENV"
+
+      # ---------- run and report ----------
+      - name: Run evaluation
+        run: |
+          uv run python -m assistant --provider "$ASSISTANT_PROVIDER" --model "$ASSISTANT_MODEL" \
+            eval --only "$ONLY" --repeats "$REPEATS"
+
+      - name: Publish report
+        if: always()
+        run: |
+          if [ -f output/assistant_eval/latest/report.md ]; then
+            cat output/assistant_eval/latest/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no report produced, see the run logs" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistant-eval-${{ env.BACKEND }}-${{ github.run_number }}
+          path: |
+            output/assistant_eval/
+            ollama.log
+          if-no-files-found: ignore

@@ -46,13 +46,19 @@ def run(assistant: Assistant, questions: list[dict], out_root: str, repeats: int
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out_dir = Path(out_root) / "assistant_eval" / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
-    results = []
+    results, stopped = [], None
     with open(out_dir / "results.jsonl", "w") as fh:
         for q in questions:
+            if stopped:
+                break
             for rep in range(repeats):
                 try:
                     ans = assistant.ask(q["question"])
                 except Exception as e:  # api errors etc: count as a failure, keep going
+                    if type(e).__name__ == "QuotaExhausted":
+                        stopped = f"stopped before {q['id']}: {e}"
+                        print(stopped)
+                        break
                     ans = Answer(question=q["question"], status="failed", answer=f"error: {e}")
                 ok, detail = score(q, ans, assistant.con)
                 guard_blocks = sum(1 for t in ans.trace if str(t.get("error", "")).startswith("guard"))
@@ -63,8 +69,15 @@ def run(assistant: Assistant, questions: list[dict], out_root: str, repeats: int
                 print(f"{q['id']} rep{rep} {'PASS' if ok else 'FAIL'} {detail} ({ans.seconds}s, {ans.steps} steps)")
 
     summary = summarise(results, assistant.model)
+    summary["stopped"] = stopped
+    summary["planned"] = len(questions) * repeats
     (out_dir / "report.md").write_text(render_report(summary, results))
     print(f"\n{summary['correct']}/{summary['total']} correct ({summary['accuracy']:.0%}). report: {out_dir / 'report.md'}")
+    # stable location so ci can find the newest report
+    latest = Path(out_root) / "assistant_eval" / "latest"
+    latest.mkdir(parents=True, exist_ok=True)
+    for f in ("results.jsonl", "report.md"):
+        (latest / f).write_text((out_dir / f).read_text())
     return summary
 
 
@@ -102,6 +115,8 @@ def render_report(s: dict, results: list[dict]) -> str:
     lines = [
         "# ask-the-data assistant evaluation", "",
         f"model: `{s['model']}`", "",
+        *([f"> **incomplete run**: {s['stopped']} ({s['total']} of {s['planned']} runs scored)", ""]
+          if s.get("stopped") else []),
         "| metric | value |", "|---|---|",
         f"| overall | {s['correct']}/{s['total']} ({_pct(s['accuracy'])}) |",
         f"| answerable questions, execution accuracy | {_pct(s['answerable_accuracy'])} |",

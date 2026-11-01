@@ -85,3 +85,51 @@ def test_preflight_reports_missing_model():
     client = OpenAICompatClient(base_url="http://mock/v1", transport=transport)
     assert client.preflight("llama3.1:8b") is None
     assert "not available" in client.preflight("qwen2.5:14b")
+
+
+def test_retries_short_rate_limit_then_succeeds(monkeypatch):
+    import assistant.llm_openai as m
+    monkeypatch.setattr(m.time, "sleep", lambda s: None)
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(429, headers={"retry-after": "3"}, json={"error": "slow down"})
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "hi"}}]})
+    client = OpenAICompatClient(base_url="http://mock/v1", transport=httpx.MockTransport(handler))
+    resp = client.messages.create(model="m", max_tokens=10, messages=[{"role": "user", "content": "x"}])
+    assert len(calls) == 2 and resp.content[0]["text"] == "hi"
+
+
+def test_daily_quota_raises_and_eval_stops(db, tmp_path, monkeypatch):  # noqa: F811
+    import assistant.llm_openai as m
+    from assistant.eval.run_eval import load_questions, run
+    monkeypatch.setattr(m.time, "sleep", lambda s: None)
+    msg = "Rate limit of 150 per 86400s exceeded for UserByModelByDay. Please wait 19704 seconds before retrying."
+    transport = httpx.MockTransport(lambda req: httpx.Response(429, json={"error": {"message": msg}}))
+    client = OpenAICompatClient(base_url="http://mock/v1", transport=transport)
+    con, ctx = db
+    summary = run(Assistant(con, ctx, client=client, model="m"), load_questions(only={"q01", "q02"}), str(tmp_path))
+    assert summary["stopped"] and summary["total"] == 0 and summary["planned"] == 2
+    assert "incomplete run" in (tmp_path / "assistant_eval" / "latest" / "report.md").read_text()
+
+
+def test_preflight_skips_servers_without_model_listing():
+    transport = httpx.MockTransport(lambda req: httpx.Response(404, json={"error": "not found"}))
+    assert OpenAICompatClient(base_url="http://mock/v1", transport=transport).preflight("any") is None
+
+
+def test_github_models_picker_prefers_low_tier_open_tool_models():
+    from assistant.github_models import fetch_catalog, pick, table
+    catalog = [
+        {"id": "openai/gpt-4.1", "publisher": "OpenAI", "capabilities": ["tool-calling"], "rate_limit_tier": "high"},
+        {"id": "openai/gpt-4.1-mini", "publisher": "OpenAI", "capabilities": ["tool-calling"], "rate_limit_tier": "low"},
+        {"id": "meta/llama-3.1-70b", "publisher": "Meta", "capabilities": [], "rate_limit_tier": "low"},
+        {"id": "mistral-ai/mistral-small", "publisher": "Mistral AI", "capabilities": ["tool-calling"], "rate_limit_tier": "low"},
+    ]
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, json=catalog))
+    cat = fetch_catalog(transport=transport)
+    assert pick(cat) == "mistral-ai/mistral-small"
+    assert pick(cat, prefer_open=False) in {"openai/gpt-4.1-mini", "mistral-ai/mistral-small"}  # never the high tier
+    assert "llama-3.1-70b" not in table(cat)

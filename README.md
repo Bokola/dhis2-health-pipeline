@@ -356,7 +356,17 @@ vllm serve Qwen/Qwen2.5-14B-Instruct --enable-auto-tool-choice --tool-call-parse
 uv run python -m assistant --provider openai --base-url http://localhost:8000/v1 --model Qwen/Qwen2.5-14B-Instruct eval
 ```
 
-Environment variables work too: `ASSISTANT_PROVIDER=openai`, `ASSISTANT_MODEL`, `OPENAI_BASE_URL`, and `OPENAI_API_KEY` for hosted OpenAI-compatible providers. Because the eval is identical across providers, the reports give a like-for-like comparison of hosted and open-weight models. The offline tests (`tests/test_assistant.py`) need neither an API key nor Spark.
+Environment variables work too: `ASSISTANT_PROVIDER=openai`, `ASSISTANT_MODEL`, `OPENAI_BASE_URL`, and `OPENAI_API_KEY` for hosted OpenAI-compatible providers. Because the eval is identical across providers, the reports give a like-for-like comparison of hosted and open-weight models.
+
+### Run it online with GitHub Actions
+
+`.github/workflows/assistant-eval.yml` builds the gold layer on a runner, runs the eval, writes the report to the run summary and uploads `results.jsonl` as an artifact. Start it from **Actions → Ask-the-data assistant eval → Run workflow** and choose a backend:
+
+| Backend | Setup | Cost | Notes |
+|---|---|---|---|
+| `github-models` (default) | none: the workflow's `GITHUB_TOKEN` with `models: read` | free, rate limited | `model: auto` picks a low-tier, tool-calling model from the live catalog (open-weight first). Low-tier daily quota covers about one full run per day; keep `repeats` at 1. Requests are throttled and results trimmed to fit the 8k-token input limit. If the run ends with a 403 (some orgs disable Models for Actions), add a fine-grained PAT with only *Models: read* as secret `MODELS_TOKEN` |
+| `ollama` | none | free | Open-weight model running on the runner's CPU. Slow (expect an hour or more for `qwen2.5:7b`), but no quota, so it suits `repeats: 3`. Models are cached between runs |
+| `anthropic` | repository secret `ANTHROPIC_API_KEY` | paid per token | Fastest and the reference result | The offline tests (`tests/test_assistant.py`) need neither an API key nor Spark.
 
 ---
 

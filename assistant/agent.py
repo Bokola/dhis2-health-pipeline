@@ -25,7 +25,10 @@ from assistant.sql_guard import GuardError, check_sql
 
 DEFAULT_MODEL = os.environ.get("ASSISTANT_MODEL", "claude-sonnet-5-5")
 MAX_ROWS = 200
-ROWS_SHOWN_TO_MODEL = 40
+# rows / characters of each run_sql result sent back to the model. lower these for
+# endpoints with small input limits (github models free tier: 8k input tokens per request)
+ROWS_SHOWN_TO_MODEL = int(os.environ.get("ASSISTANT_ROWS_TO_MODEL", "40"))
+MAX_RESULT_CHARS = int(os.environ.get("ASSISTANT_MAX_RESULT_CHARS", "12000"))
 
 SYSTEM_TEMPLATE = """You answer questions from health programme staff using a DHIS2 service-delivery warehouse.
 Your users are not technical. You work by writing DuckDB SQL against the tables below, running it, and explaining the result.
@@ -232,7 +235,12 @@ class Assistant:
             "rows": [[_jsonable(v) for v in r] for r in rows[:ROWS_SHOWN_TO_MODEL]],
             "row_count": len(rows) if not truncated else f">{MAX_ROWS}",
         }
-        return {"content": json.dumps(payload)}
+        text = json.dumps(payload)
+        while len(text) > MAX_RESULT_CHARS and len(payload["rows"]) > 1:
+            payload["rows"] = payload["rows"][: max(1, len(payload["rows"]) // 2)]
+            payload["note"] = f"only the first {len(payload['rows'])} rows are shown; aggregate or filter for less"
+            text = json.dumps(payload)
+        return {"content": text}
 
     def _finalise(self, ans: Answer, inp: dict, t0: float) -> Answer:
         sql = inp.get("sql", "")
