@@ -1,519 +1,342 @@
-# DHIS2 Health Data Pipeline
+# DHIS2 Health Data Pipeline + Ask-the-Data LLM Assistant
 
-A modular, production-oriented **Apache Spark health analytics pipeline** for ingesting, validating, transforming, and aggregating DHIS2 public health reporting data into analytics-ready storage layers.
+An end-to-end health analytics project in two parts:
 
-The project follows a **Medallion Architecture pattern (Bronze → Silver → Gold)** to support scalable ETL processing, reproducible analytics, and downstream reporting workflows.
+1. **A data pipeline.** A modular Apache Spark pipeline that turns raw DHIS2 health-reporting extracts into a validated, analytics-ready warehouse using a Bronze → Silver → Gold (medallion) design.
+2. **An LLM prototype on top of it.** An *ask-the-data* assistant that lets non-technical programme staff ask questions in plain language ("Which Ugandan districts had the most RDT tests last quarter?") and get an answer computed from the warehouse, with the SQL that produced it and the caveats that apply.
 
----
-
-## Features
-
-- Modular Spark task orchestration
-- Bronze → Silver → Gold layered architecture
-- Schema enforcement using strict validation rules
-- Null-preserving health metric handling
-- Analytical and stakeholder-specific output layers
-- Dockerized execution environment
-- `uv`-managed Python dependency workflow
-- Automated test suite with isolated execution support
-- CI/CD ready GitHub Actions integration
+The assistant is built to be **model-agnostic**: the same agent, guardrails and evaluation run on API-based platforms (Anthropic Claude, GitHub Models, any OpenAI-compatible service) and on open-source models running locally (Ollama, vLLM, llama.cpp, LM Studio). That makes it a working testbed for comparing hosted and open-weight models on a real health-data task.
 
 ---
 
-# Architecture Overview
+## Highlights
 
-The pipeline separates ingestion, transformation, analytics, and aggregation responsibilities into independently testable processing stages.
-
-```text
-                ┌─────────────────────────────────────┐
-                │ Raw DHIS2 Extracts / Source Payloads│
-                └─────────────────────────────────────┘
-                                   │
-                                   ▼
-                          BRONZE LAYER (Raw)
-                                   │
-                                   ▼
-                  ┌────────────────────────────────┐
-                  │ Pipeline Ingestion Engine      │
-                  │ - validation                   │
-                  │ - cleaning                     │
-                  │ - normalization                │
-                  └────────────────────────────────┘
-                                   │
-                                   ▼
-                  ┌────────────────────────────────┐
-                  │ Transformation Engine          │
-                  │ - schema enforcement           │
-                  │ - type casting                 │
-                  │ - business logic               │
-                  └────────────────────────────────┘
-                                   │
-                                   ▼
-                        SILVER LAYER (Curated)
-                                   │
-                    ┌──────────────┴──────────────┐
-                    ▼                             ▼
-         ┌───────────────────────┐   ┌────────────────────────┐
-         │ task_06_analytics     │   │ task_07_aggregations   │
-         │ time-series modeling  │   │ snapshot summaries     │
-         └───────────────────────┘   └────────────────────────┘
-                    │                             │
-                    ▼                             ▼
-        /output/analytics/            /output/aggregations/
-             (.parquet)                     (.csv)
-
-                        GOLD LAYER (Served Outputs)
-```
+- **LLM tool use, not free text.** The model works through three tools (`run_sql`, `submit_answer`, `decline`) and every number in an answer comes from a query the system re-executes itself.
+- **Guardrails in code, not just in the prompt.** A read-only, locked-down DuckDB database, a SQL allowlist, and a semantic checker that validates every filter value against the real data.
+- **Evaluation-driven development.** A 32-question benchmark with gold SQL, out-of-scope questions and prompt-injection tests, scored automatically and reported per category, with latency and token counts.
+- **Open-source and API backends behind one interface.** Switch with a flag: `--provider anthropic` or `--provider openai --model qwen2.5:7b`.
+- **Runs in CI.** A GitHub Actions workflow builds the warehouse and runs the evaluation on GitHub Models (free), Ollama on the runner (open weights), or Claude.
+- **Production-minded data engineering.** Strict schemas, null-preserving metric handling, quarantine of unresolvable records, and a test suite that runs in CI.
 
 ---
 
-# Data Processing Layers
-
-## Bronze Layer — Raw Source Zone
-
-Stores raw DHIS2 transactional extracts and unmodified payloads.
-
-Characteristics:
-
-- Source-preserving ingestion
-- Minimal transformation
-- Traceable audit lineage
-- Supports replayable processing
-
-Typical contents:
-
-- Country reporting extracts
-- Facility-level submissions
-- DHIS2 API payload snapshots
-
----
-
-## Silver Layer — Curated Warehouse Zone
-
-Applies structured validation, schema enforcement, and transformation logic.
-
-Key design principles:
-
-- Strict Spark `StructType` enforcement
-- Controlled type casting
-- Business rule normalization
-- Data quality validation
-
-### Missing Data Strategy
-
-Health reporting datasets frequently contain absent observations.
-
-This pipeline intentionally preserves missing values as **true `NULL` states** instead of coercing them into zero values.
-
-This prevents:
-
-- artificial reporting inflation
-- distorted averages
-- biased completeness metrics
-- misleading epidemiological interpretations
-
----
-
-## Gold Layer — Analytics & Delivery Zone
-
-Produces optimized analytical outputs for downstream consumption.
-
-Two independent serving domains are maintained:
-
-### Analytics Domain
-
-Location:
-
-```text
-/output/analytics/
-```
-
-Format:
-
-```text
-.parquet
-```
-
-Use cases:
-
-- rolling averages
-- reporting rates
-- month-over-month calculations
-- longitudinal trend analysis
-- BI dashboard consumption
-
----
-
-### Aggregation Domain
-
-Location:
-
-```text
-/output/aggregations/
-```
-
-Format:
-
-```text
-.csv
-```
-
-Use cases:
-
-- quarterly summaries
-- country completeness tables
-- stakeholder exports
-- matrix/pivot outputs
-
----
-
-# Repository Structure
-
-```text
-.
-├── data/
-│   ├── data_values
-│   ├── metadata
-│   ├── org_units
-│   └── programs
-│
-├── pipeline/
-│   ├── ingestion/
-│   ├── transformations/
-│   ├── analytics/
-│   ├── aggregations/
-│   └── utils/
-│
-├── tests/
-│   ├── integration/*
-│   ├── unit/
-│   └── fixtures/
-│
-├── output/
-│   ├── aggregations/
-│   ├── analytics/
-│   ├── quarantine/
-│   └── warehouse/
-│
-├── Dockerfile
-├── pyproject.toml
-├── uv.lock
-└── README.md
-```
-
----
-
-# Technology Stack
-
-| Component | Technology |
-|------------|------------|
-| Language | Python |
-| Processing Engine | Apache Spark |
-| Dependency Management | uv |
-| Container Runtime | Docker |
-| Testing | pytest |
-| CI/CD | GitHub Actions |
-
----
-
-
----
-
-### Task Consolidation & Engineering Design Choices (7 vs. 8 Modules)
-
-While early design blueprints for this pipeline suggested an 8-task layout, the final production implementation consciously consolidates the execution workflow into **7 high-cohesion modules**. This was done to enforce clean separation of concerns and eliminate unnecessary intermediate disk I/O bottlenecks:
-
-* **The Merger (Analytical Summaries & Matrix Aggregations):** Initial specifications separated the time-series windowing steps (Month-over-Month deltas, 3-month rolling averages) and the high-level reporting matrices (the pivoted data element coverage grid) into two distinct tasks. We merged these closely related operations into the final **Gold-tier processing modules (Task 06 and Task 07)**.
-* **Elimination of Redundant Shared I/O Boundaries:** A strict 8-task breakdown would have forced the pipeline to write transient datasets to disk, only to immediately read them back into cluster memory. Combining these operations allows them to share an uninterrupted memory lineage.
-* **Pipeline Performance Optimization:** Consolidating these steps allows Apache Spark's Catalyst Optimizer to build an efficient, unbroken Directed Acyclic Graph (DAG). This maximizes execution performance by pipelining transformations together in memory and eliminating redundant cross-node network shuffles.
-
-The complete structural map of these 7 optimized execution blocks is fully detailed in the Pipeline Workflow Architecture diagram above.
----
-
-# Installation
-
-## Prerequisites
-
-Required software:
-
-- Python 3.11+
-- Java 17
-- Apache Spark compatible runtime
-- Docker (optional)
-- `uv`
-
-Install `uv`:
+## Quick start
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
----
-
-## Local Setup
-
-Clone repository:
-
-```bash
-git clone dhis2-health-pipeline.git
-cd dhis2-health-data-pipeline
-```
-
-Install dependencies:
-
-```bash
+git clone https://github.com/Bokola/dhis2-health-pipeline.git
+cd dhis2-health-pipeline
 uv sync
+
+# 1. build the warehouse (needs Java 17)
+uv run python generate_data.py
+uv run python pipeline.py
+
+# 2. ask a question with a free local open-source model
+ollama pull qwen2.5:7b
+uv run python -m assistant --provider openai --model qwen2.5:7b \
+    ask --show-sql "Which country had the lowest reporting rate last month?"
 ```
 
-Activate environment:
+Example output:
 
-```bash
-source .venv/bin/activate
+```text
+Kenya had the lowest reporting rate last month.
+
+country
+Kenya
+
+Caveats:
+  - The most recent months (202510, 202511) may still be filling in: across the
+    dataset 12.0% of values arrive more than 60 days after the month ends.
+
+SQL:
+SELECT country FROM country_reporting_rates WHERE period = '202511'
+ORDER BY reporting_rate ASC LIMIT 1;
 ```
 
 ---
 
-# Running the Pipeline
+# Part 1: The data pipeline
 
-## Local Execution
+## Architecture
 
-Example:
-
-```bash
-uv run python pipeline/main.py
+```text
+ Raw DHIS2 extracts (data values, metadata, org units, programs)
+                           │
+                           ▼
+ BRONZE   task_01 ingestion ─ strict StructType schemas, raw preserved
+                           │
+                           ▼
+ SILVER   task_02 metadata resolution ─ unresolvable data elements → quarantine
+          task_03 org unit hierarchy  ─ orphaned facilities → quarantine
+          task_04 quality flags       ─ type casting, missing / zero / late flags
+                           │
+                           ▼
+ GOLD     task_05 dimensional model ─ star schema (fact_service_delivery + dims)
+          task_06 analytics         ─ reporting rates, month-over-month, rolling averages (.parquet)
+          task_07 aggregations      ─ quarterly summaries, coverage matrices (.csv)
+                           │
+                           ▼
+          Ask-the-Data assistant (Part 2) reads the gold layer read-only
 ```
 
----
+The workflow uses **7 high-cohesion tasks** rather than the 8 in early designs. The analytical windowing (month-over-month, rolling averages) and the reporting matrices were folded into tasks 06 and 07, so related transformations share one in-memory lineage. That avoids writing intermediate datasets to disk only to read them back, and lets Spark's Catalyst optimizer plan a single unbroken DAG.
 
-## Docker Execution
+## Processing layers
 
-Build image:
+**Bronze (raw source zone).** Source-preserving ingestion with minimal transformation, so processing is traceable and replayable.
+
+**Silver (curated zone).** Strict Spark `StructType` enforcement, controlled type casting, metadata and hierarchy resolution, and data-quality flags. Records that can't be resolved (unknown data elements, facilities missing from the hierarchy) are quarantined rather than silently dropped.
+
+**Missing data strategy.** Health reporting data often has gaps. The pipeline keeps missing values as true `NULL` rather than coercing them to zero, which would inflate or deflate totals, distort averages and completeness metrics, and mislead epidemiological interpretation. Explicitly reported zeros are flagged separately (`is_explicit_zero`).
+
+**Gold (analytics and delivery zone).**
+
+| Domain | Location | Format | Used for |
+|---|---|---|---|
+| Warehouse | `output/warehouse/` | Parquet | Star schema: `fact_service_delivery`, `dim_org_unit`, `dim_data_element`, `dim_period`, `dim_program` |
+| Analytics | `output/analytics/` | Parquet | Reporting rates, month-over-month change, rolling averages, BI dashboards |
+| Aggregations | `output/aggregations/` | CSV | Quarterly summaries, completeness tables, stakeholder exports |
+| Quarantine | `output/quarantine/` | Parquet | Rejected records, kept for audit |
+
+Parquet gives columnar compression and fast analytical scans; CSV keeps stakeholder outputs easy to open in a spreadsheet.
+
+## Running the pipeline
+
+```bash
+uv run python generate_data.py                                  # synthetic DHIS2-style data (seeded, reproducible)
+uv run python pipeline.py --data-dir ./data --output-dir ./output
+```
+
+With Docker:
 
 ```bash
 docker build -t dhis2-pipeline .
+docker run --rm -v $(pwd)/output:/app/output dhis2-pipeline
 ```
 
-Run container:
-
-```bash
-docker run --rm \
-    -v $(pwd)/output:/app/output \
-    dhis2-pipeline
-```
+> **Data-quality fix found while building the assistant.** The first assistant queries returned empty totals. Tracing that back showed task 04 only cast `NUMBER`/`INTEGER` value types, while DHIS2 sends `INTEGER_ZERO_OR_POSITIVE` and `PERCENTAGE`, so `cast_value` was NULL in every fact row and every value-based gold output was empty. The cast now covers all DHIS2 numeric types. Building an LLM interface on top of a pipeline turned out to be an effective end-to-end test of the pipeline itself.
 
 ---
 
-# Ask-the-Data Assistant (LLM prototype)
+# Part 2: Ask-the-Data assistant (LLM prototype)
 
-Programme staff ask questions in plain language and get an answer computed from the gold layer, the SQL that produced it, and the caveats that apply.
+## What it does
 
-```text
-$ python -m assistant ask --show-sql "Which 5 Ugandan districts had the most RDT tests last quarter?"
-```
+Programme staff ask a question in plain language. The assistant writes SQL against a curated view of the gold layer, runs it, checks the result, and answers with the numbers, the SQL it used and any caveats. If the data cannot answer the question, for example stock-outs, population denominators or targets, which are not in this warehouse, it says so instead of approximating.
 
-### How it works
+## How it works
 
 ```text
-question ──► Claude (tool use) ──► run_sql ──► SQL guard ──► locked DuckDB ──► rows back to Claude
-                    │                                                (repeat to explore / fix errors)
-                    └──► submit_answer(sql, answer, caveats) ──► final SQL re-run by us ──► + deterministic caveats
-                    └──► decline(reason)   (data not in the warehouse: stock, population, targets ...)
+question ──► LLM (tool calling) ──► run_sql ──► SQL guard ──► semantic check ──► locked DuckDB
+                  │      ▲                                                        │
+                  │      └──────────── rows, or a fixable error message ◄─────────┘
+                  │
+                  ├──► submit_answer(sql, answer, caveats) ──► review ──► final SQL re-run by the system
+                  │                                                    + caveats added in code
+                  └──► decline(reason)
 ```
 
 | Layer | File | What it guarantees |
 |---|---|---|
-| Semantic layer | `assistant/catalog.py` | Six curated tables (`service_delivery`, `facilities`, `data_elements`, `country_reporting_rates`, `district_monthly_totals`, `quarantine_summary`) with plain-language column docs. Parquet is copied into in-memory DuckDB, then external access is disabled and the configuration locked, so no file can be read even if the guard were bypassed |
-| SQL guard | `assistant/sql_guard.py` | Single `SELECT` only, allowlisted tables only, no file/settings/catalog functions, row cap. Errors go back to the model as fixable messages |
-| Semantic review | `assistant/semantic_check.py` | Checks every filter value against the real data (`data_element = 'DMPA stock-outs'` → "does not exist, call decline"; `country = 'uganda'` → "case-sensitive, use 'Uganda'") and period/quarter formats (`period = '2025-Q3'` → "use quarter"). Problems go back to the model before a query runs or an answer is accepted; an empty final result is sent back once for a re-check |
-| Agent | `assistant/agent.py` | Tool-use loop with a step limit (last step forces a decision). The final SQL is re-executed rather than trusted. Caveats for recent months still filling in, NULL-is-not-zero and truncation are added in code, independent of the model |
-| Evaluation | `assistant/eval/` | 32 questions: 26 with gold SQL scored by execution accuracy (row match, column names ignored), plus questions the data cannot answer and safety prompts that must be declined |
+| Semantic layer | `assistant/catalog.py` | Six curated tables (`service_delivery`, `facilities`, `data_elements`, `country_reporting_rates`, `district_monthly_totals`, `quarantine_summary`) with plain-language column docs. Data is copied into in-memory DuckDB, then external file access is disabled and the configuration locked, so nothing else can be read even if a query got past the guard |
+| SQL guard | `assistant/sql_guard.py` | One `SELECT` only, allowlisted tables only, no file, settings or catalog functions, row cap. Errors go back to the model as messages it can act on |
+| Semantic review | `assistant/semantic_check.py` | Checks every filter value against the real data (`data_element = 'DMPA stock-outs'` → "does not exist, call decline"; `country = 'uganda'` → "case-sensitive, use 'Uganda'") and period formats (`period = '2025-Q3'` → "use quarter"). An empty final result is sent back once for a re-check |
+| Agent | `assistant/agent.py` | Tool-use loop with a step limit. The final SQL is re-executed rather than trusted. Caveats for recent months still filling in, NULL-is-not-zero and truncated results are added in code, independent of the model |
+| Model adapters | `assistant/llm_openai.py`, `assistant/github_models.py` | One interface for Claude and any OpenAI-compatible server. Handles throttling, retries, daily quotas and models that write tool calls as plain text |
+| Evaluation | `assistant/eval/` | Benchmark, scoring and reports (see below) |
 
-Domain conventions the model is told (and the gold answers follow): relative dates are relative to the latest data period, "last quarter" is the latest complete quarter, totals sum across category option combos, `PERCENTAGE` elements are averaged and never summed, facilities are grouped by uid because names repeat.
+Domain conventions the model is given, and that the gold answers follow: relative dates are relative to the latest data period, "last quarter" is the latest complete quarter, totals sum across disaggregations, `PERCENTAGE` indicators are averaged and never summed, and facilities are grouped by ID because names repeat.
 
-### Run it
+## Model backends: API platforms and open-source tools
 
-```bash
-export ANTHROPIC_API_KEY=...
-uv run python generate_data.py && uv run python pipeline.py      # build ./output first
-uv run python -m assistant ask "How many confirmed malaria cases did Uganda report last quarter?"
-uv run python -m assistant chat --show-sql
-uv run python -m assistant eval --repeats 3                       # writes output/assistant_eval/<timestamp>/report.md
-```
-
-The model defaults to `claude-sonnet-5-5`; override with `--model` or `ASSISTANT_MODEL` to compare models on the same question set.
-
-### Open-weight models (no API key)
-
-`assistant/llm_openai.py` lets the same agent, guard and eval run on any OpenAI-compatible server: Ollama, vLLM, llama.cpp `llama-server` or LM Studio. The model needs tool (function) calling support.
+| Backend | Type | Setup | Cost | Best for |
+|---|---|---|---|---|
+| **Ollama** (`qwen2.5:7b`, `qwen2.5:14b`, `llama3.1:8b`) | Open-source, local | `ollama pull <model>` | Free | Private, offline work; no data leaves the machine |
+| **vLLM / llama.cpp / LM Studio** | Open-source, self-hosted | Start the server | Free (your hardware) | Faster open-weight inference on a GPU |
+| **GitHub Models** | API platform | None in GitHub Actions (`GITHUB_TOKEN`) | Free, rate-limited | Quick hosted runs in CI |
+| **Anthropic Claude** | API platform | `ANTHROPIC_API_KEY` | Paid per token | Reference-quality results |
+| Any OpenAI-compatible service | API platform | Base URL + key | Varies | Comparing other providers |
 
 ```bash
-# ollama, on a laptop
-ollama pull qwen2.5:14b            # ~9 GB; qwen2.5:7b if you have under 16 GB RAM
-uv run python -m assistant --provider openai --model qwen2.5:14b ask "Which country had the lowest reporting rate last month?"
-uv run python -m assistant --provider openai --model qwen2.5:14b eval
+# open-source, local (Ollama)
+uv run python -m assistant --provider openai --model qwen2.5:7b ask "How many facilities do we have in Kenya?"
 
-# vllm on a gpu box
+# open-source, self-hosted on a GPU (vLLM)
 vllm serve Qwen/Qwen2.5-14B-Instruct --enable-auto-tool-choice --tool-call-parser hermes
-uv run python -m assistant --provider openai --base-url http://localhost:8000/v1 --model Qwen/Qwen2.5-14B-Instruct eval
+uv run python -m assistant --provider openai --base-url http://localhost:8000/v1 \
+    --model Qwen/Qwen2.5-14B-Instruct ask "..."
+
+# API platform (Claude)
+export ANTHROPIC_API_KEY=...
+uv run python -m assistant ask "..."
+
+# interactive session, any backend
+uv run python -m assistant --provider openai --model qwen2.5:7b chat --show-sql
 ```
 
-Environment variables work too: `ASSISTANT_PROVIDER=openai`, `ASSISTANT_MODEL`, `OPENAI_BASE_URL`, and `OPENAI_API_KEY` for hosted OpenAI-compatible providers. Because the eval is identical across providers, the reports give a like-for-like comparison of hosted and open-weight models.
+Environment variables work in place of flags: `ASSISTANT_PROVIDER`, `ASSISTANT_MODEL`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`. The model needs tool (function) calling support.
 
-### Run it online with GitHub Actions
+## Evaluation
 
-`.github/workflows/assistant-eval.yml` builds the gold layer on a runner, runs the eval, writes the report to the run summary and uploads `results.jsonl` as an artifact. Start it from **Actions → Ask-the-data assistant eval → Run workflow** and choose a backend:
+The benchmark in `assistant/eval/questions.yaml` has 32 questions:
 
-| Backend | Setup | Cost | Notes |
-|---|---|---|---|
-| `github-models` (default) | none: the workflow's `GITHUB_TOKEN` with `models: read` | free, rate limited | `model: auto` picks a low-tier, tool-calling model from the live catalog (open-weight first). Low-tier daily quota covers about one full run per day; keep `repeats` at 1. Requests are throttled and results trimmed to fit the 8k-token input limit. If the run ends with a 403 (some orgs disable Models for Actions), add a fine-grained PAT with only *Models: read* as secret `MODELS_TOKEN` |
-| `ollama` | none | free | Open-weight model running on the runner's CPU. Slow (expect an hour or more for `qwen2.5:7b`), but no quota, so it suits `repeats: 3`. Models are cached between runs |
-| `anthropic` | repository secret `ANTHROPIC_API_KEY` | paid per token | Fastest and the reference result | The offline tests (`tests/test_assistant.py`) need neither an API key nor Spark.
+| Group | Questions | Pass condition |
+|---|---|---|
+| Answerable | 26: lookups, totals, rankings, percentages, reporting rates, data quality, change over time | The final SQL returns the same rows as the gold SQL (column names and extra columns ignored; order checked for top-N questions) |
+| Data absent for that country | 1 | Decline, or answer with an empty result |
+| Out of scope | 3: stock-outs, population rates, targets | Must decline rather than approximate |
+| Safety | 2: a destructive request and a prompt injection | Must decline; the guard must block anything that gets through |
+
+Gold answers are recomputed from gold SQL at run time, so they stay correct if the data is regenerated. A 10-question `quick` subset covers one question per behaviour for fast iteration.
+
+```bash
+uv run python -m assistant --compact eval --tags quick       # 10 questions, smoke test
+uv run python -m assistant eval                              # all 32
+uv run python -m assistant eval --repeats 3                  # measure run-to-run variation
+cat output/assistant_eval/latest/report.md
+```
+
+Each report gives overall and per-category accuracy, false declines, guard blocks, median latency, model calls per question and token use, plus every failure with the model's SQL.
+
+## Results
+
+| Model | Backend | Version | Overall | Answerable (execution accuracy) | Correct declines | Median time / question |
+|---|---|---|---|---|---|---|
+| `qwen2.5:7b` | Ollama, laptop CPU | before semantic review | 12/32 (38%) | 35% | 50% | 209 s |
+
+<!-- add a row for each new run: model, backend, version, scores from report.md -->
+
+**What the baseline failures showed.** Most failures fell into a few patterns that code could catch, rather than model ability:
+
+- **Quarter written as a period** (`period = '2025-Q3'` instead of `quarter = '2025-Q3'`): the most common single failure.
+- **Trusting an empty result:** a wrong filter returned no rows and the model reported "there were none".
+- **Filtering on values that don't exist:** `data_element = 'DMPA stock-outs'`, which should have triggered a decline.
+- **Reasoning errors** (wrong aggregation, contradictory filters, wrong join) that typically need a larger model.
+
+The semantic review layer was added in response to the first three patterns. It uses general rules (check filter values against the data, check date formats, re-check empty answers) rather than fixes for specific questions. The prompt-injection test never got past the guard; it counted as a failure only because the model ran out of steps instead of formally declining.
+
+**Next:** re-run the baseline model with semantic review, compare a larger open-weight model and a hosted model on the same benchmark, and score a held-out set of new questions to check the improvements generalise beyond the questions that motivated them.
+
+## Running the evaluation in GitHub Actions
+
+`.github/workflows/assistant-eval.yml` builds the warehouse on a runner, runs the evaluation, writes the report to the run summary and uploads the full results as an artifact. Start it from **Actions → Ask-the-data assistant eval → Run workflow**:
+
+| Input | Options |
+|---|---|
+| `backend` | `github-models` (free, fast, rate-limited), `ollama` (open weights on the runner CPU, slow, no quota), `anthropic` (needs the `ANTHROPIC_API_KEY` secret) |
+| `model` | `auto`, or a model ID such as `openai/gpt-4.1` or `qwen2.5:7b` |
+| `tags` | `quick` for the 10-question subset, empty for all 32 |
+| `only` | specific question IDs, e.g. `q01,q13,q28` |
+
+On GitHub Models, requests are throttled and results trimmed to fit the free tier's limits, and a run that hits the daily quota stops cleanly with a partial report.
+
+## Safety and data protection
+
+- The model never touches files, credentials or the network: it only sees query results from a locked, read-only, in-memory database.
+- Two independent layers (the SQL guard and DuckDB's own lockdown) prevent writes and file access.
+- The system re-runs the final SQL itself, so the numbers in an answer always match the query shown.
+- With a local open-source model, no data leaves the machine, which matters for real health data.
+- This repository uses **synthetic data only**. Before pointing the assistant at real programme data, check your organisation's data-protection and AI-use policies.
 
 ---
+
+# Repository structure
+
+```text
+.
+├── pipeline.py                 # runs tasks 01-07
+├── generate_data.py            # synthetic DHIS2-style source data
+├── tasks/                      # pipeline tasks 01-07
+├── utils/                      # schemas, logging
+├── assistant/
+│   ├── __main__.py             # CLI: ask, chat, eval
+│   ├── agent.py                # tool-use loop, answer review, caveats
+│   ├── catalog.py              # semantic layer + locked DuckDB
+│   ├── sql_guard.py            # SQL allowlist
+│   ├── semantic_check.py       # value and format checks against the data
+│   ├── llm_openai.py           # adapter for OpenAI-compatible servers (Ollama, vLLM, ...)
+│   ├── github_models.py        # GitHub Models catalog and model selection
+│   └── eval/                   # questions.yaml, scoring, report
+├── tests/
+│   ├── test_pipeline_tasks.py  # Spark pipeline tests
+│   └── test_assistant*.py      # assistant tests (no API key, no Spark)
+├── .github/workflows/
+│   ├── ci.yml                  # test suite on push and pull request
+│   └── assistant-eval.yml      # on-demand LLM evaluation
+├── Dockerfile
+├── pyproject.toml
+└── uv.lock
+```
+
+`data/` and `output/` are generated locally and not committed.
+
+---
+
+# Installation
+
+Requirements: Python 3.10 or 3.11, Java 17 (Spark 3.4 does not run on Java 21), `uv`, and optionally Docker and Ollama.
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh     # install uv
+git clone https://github.com/Bokola/dhis2-health-pipeline.git
+cd dhis2-health-pipeline
+uv sync
+```
+
+Use `uv run ...` for every command; there is no need to activate the virtual environment.
 
 # Testing
 
-The project contains a dedicated automated testing suite under `/tests`.
-
-Execute all tests:
-
 ```bash
-JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
-uv run python -m pytest tests/ -v
+uv run python -m pytest tests/ -v                         # everything (the pipeline tests need Java 17)
+uv run python -m pytest tests/test_assistant*.py -q       # assistant only: no Spark, no API key, runs in seconds
 ```
 
-Run specific categories:
+The assistant tests cover the SQL guard, database lockdown, semantic checks, scoring, model adapters (against mock servers) and the full agent loop with a scripted model.
 
-### Unit Tests
+# Continuous integration
 
-```bash
-uv run pytest tests/unit -v
-```
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yml` | push and pull request | Installs Java 17 and dependencies, runs the test suite |
+| `assistant-eval.yml` | manual | Builds the warehouse and runs the LLM evaluation on the chosen backend |
 
-### Integration Tests
+# Troubleshooting
 
-```bash
-uv run pytest tests/integration -v
-```
-
----
-
-# GitHub Actions CI Example
-
-Example workflow:
-
-`.github/workflows/pipeline.yml`
-
-```yaml
-name: Pipeline CI
-
-on:
-  push:
-  pull_request:
-
-jobs:
-  test:
-
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - uses: astral-sh/setup-uv@v5
-
-      - name: install dependencies
-        run: uv sync
-
-      - name: run tests
-        run: uv run pytest tests/ -v
-```
+| Symptom | Fix |
+|---|---|
+| `spark-submit: No such file or directory` | A global `SPARK_HOME` points to another Spark install. Run `unset SPARK_HOME`; the project uses the Spark bundled with `pyspark` |
+| Java errors when Spark starts | Use Java 17: `export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64` |
+| Windows: `Access is denied` running `.venv\Scripts\python.exe` | Endpoint security (e.g. Defender attack surface reduction rules) is blocking new executables. Ask IT for a developer-folder exclusion, or use WSL, GitHub Codespaces or the Actions workflow |
+| `can't reach an openai-compatible server` | Start Ollama (`ollama serve`) and pull the model first |
+| Evaluation is slow on a laptop | Use `--tags quick`, `--compact`, or a smaller model, or run it in GitHub Actions |
 
 ---
 
-# Design Principles
+# Roadmap
 
-This project emphasizes:
+**Pipeline:** incremental ingestion, Delta Lake, orchestration with Airflow, data-quality dashboards, cloud storage.
 
-- modular task isolation
-- reproducible ETL execution
-- strong schema contracts
-- scalable analytical storage
-- cloud/container portability
-- automated validation pipelines
-
----
-
-# Output Formats
-
-| Format | Purpose |
-|--------|---------|
-| Parquet | High-performance analytical processing |
-| CSV | Lightweight stakeholder distribution |
-
-### Why Parquet?
-
-Parquet enables:
-
-- columnar compression
-- predicate pushdown
-- efficient BI scanning
-- optimized analytical workloads
-
-### Why CSV?
-
-CSV supports:
-
-- universal compatibility
-- low-friction sharing
-- spreadsheet interoperability
-- lightweight reporting workflows
-
----
-
-# Future Roadmap
-
-Potential enhancements:
-
-- Airflow orchestration
-- Delta Lake support
-- Incremental ingestion strategy
-- Data quality dashboards
-- Cloud storage integration
-- Observability and monitoring layer
-
----
+**AI:**
+- Larger open-weight and hosted models on the same benchmark, with a results comparison table
+- A held-out question set to measure generalisation
+- Multi-turn follow-up questions ("and the quarter before?")
+- Plain-language data-quality notes generated from the quarantine and quality-flag tables
+- An LLM-assisted mapper from messy commodity and data-element names to reference catalogues, evaluated against a rule-based baseline
 
 # Contributing
 
-Contributions are welcome.
+1. Fork the repository and create a feature branch
+2. Make your changes and run `uv run python -m pytest tests/`
+3. Open a pull request
 
-Recommended workflow:
-
-1. Fork repository
-2. Create feature branch
-3. Commit changes
-4. Run tests
-5. Submit pull request
-
----
+New evaluation questions are especially welcome: add them to `assistant/eval/questions.yaml` with gold SQL.
 
 # License
 
-Specify project license here.
+No license has been chosen yet. Until one is added, all rights are reserved by the author.
 
-Example:
+# Maintainer
 
-```text
-MIT License
-```
-
----
-
-# Maintainers
-
-Project maintained by author.
+[@Bokola](https://github.com/Bokola)
