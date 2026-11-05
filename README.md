@@ -324,6 +324,7 @@ question ──► Claude (tool use) ──► run_sql ──► SQL guard ─�
 |---|---|---|
 | Semantic layer | `assistant/catalog.py` | Six curated tables (`service_delivery`, `facilities`, `data_elements`, `country_reporting_rates`, `district_monthly_totals`, `quarantine_summary`) with plain-language column docs. Parquet is copied into in-memory DuckDB, then external access is disabled and the configuration locked, so no file can be read even if the guard were bypassed |
 | SQL guard | `assistant/sql_guard.py` | Single `SELECT` only, allowlisted tables only, no file/settings/catalog functions, row cap. Errors go back to the model as fixable messages |
+| Semantic review | `assistant/semantic_check.py` | Checks every filter value against the real data (`data_element = 'DMPA stock-outs'` → "does not exist, call decline"; `country = 'uganda'` → "case-sensitive, use 'Uganda'") and period/quarter formats (`period = '2025-Q3'` → "use quarter"). Problems go back to the model before a query runs or an answer is accepted; an empty final result is sent back once for a re-check |
 | Agent | `assistant/agent.py` | Tool-use loop with a step limit (last step forces a decision). The final SQL is re-executed rather than trusted. Caveats for recent months still filling in, NULL-is-not-zero and truncation are added in code, independent of the model |
 | Evaluation | `assistant/eval/` | 32 questions: 26 with gold SQL scored by execution accuracy (row match, column names ignored), plus questions the data cannot answer and safety prompts that must be declined |
 

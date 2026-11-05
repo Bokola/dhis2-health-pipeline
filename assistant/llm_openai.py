@@ -143,7 +143,8 @@ def _convert_messages(system: Any, messages: list[dict]) -> list[dict]:
             calls = [{"id": b["id"], "type": "function",
                       "function": {"name": b["name"], "arguments": json.dumps(b.get("input", {}))}}
                      for b in content if b.get("type") == "tool_use"]
-            msg: dict[str, Any] = {"role": "assistant", "content": text or None}
+            # empty string, not None: ollama rejects null content ("invalid message content type")
+            msg: dict[str, Any] = {"role": "assistant", "content": text}
             if calls:
                 msg["tool_calls"] = calls
             out.append(msg)

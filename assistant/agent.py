@@ -21,6 +21,7 @@ from typing import Any
 import duckdb
 
 from assistant.catalog import ALLOWED_TABLES, DataContext, schema_prompt
+from assistant.semantic_check import build_vocab, check as semantic_check
 from assistant.sql_guard import GuardError, check_sql
 
 DEFAULT_MODEL = os.environ.get("ASSISTANT_MODEL", "claude-sonnet-5-5")
@@ -153,12 +154,16 @@ def deterministic_caveats(ctx: DataContext, sql: str, columns: list[str], rows: 
 
 class Assistant:
     def __init__(self, con: duckdb.DuckDBPyConnection, ctx: DataContext, client: Any = None,
-                 model: str = DEFAULT_MODEL, max_steps: int = 6, max_tokens: int = 2048):
+                 model: str = DEFAULT_MODEL, max_steps: int = 8, max_tokens: int = 2048,
+                 max_bounces: int = 2):
         if client is None:
             import anthropic  # imported lazily so tests and the guard need no api key
             client = anthropic.Anthropic()
         self.con, self.ctx, self.client = con, ctx, client
         self.model, self.max_steps, self.max_tokens = model, max_steps, max_tokens
+        # how many times a final answer can be sent back for a fix before we accept it
+        self.max_bounces = max_bounces
+        self.vocab = build_vocab(con)
         self.system = SYSTEM_TEMPLATE.format(
             schema=schema_prompt(ctx),
             last_period=ctx.last_period,
@@ -170,6 +175,7 @@ class Assistant:
         t0 = time.time()
         ans = Answer(question=question, status="failed")
         messages: list[dict] = [{"role": "user", "content": question}]
+        bounces = 0
 
         for step in range(self.max_steps):
             ans.steps = step + 1
@@ -206,7 +212,13 @@ class Assistant:
                     ans.seconds = round(time.time() - t0, 2)
                     return ans
                 if name == "submit_answer":
-                    return self._finalise(ans, inp, t0)
+                    feedback = self._review(ans, inp) if bounces < self.max_bounces else None
+                    if feedback is None:
+                        return self._finalise(ans, inp, t0)
+                    bounces += 1
+                    results.append({"type": "tool_result", "tool_use_id": tu["id"],
+                                    "content": feedback, "is_error": True})
+                    continue
                 if name == "run_sql":
                     results.append({"type": "tool_result", "tool_use_id": tu["id"],
                                     **self._tool_run_sql(ans, inp.get("sql", ""))})
@@ -219,7 +231,29 @@ class Assistant:
         ans.seconds = round(time.time() - t0, 2)
         return ans
 
+    def _review(self, ans: Answer, inp: dict) -> str | None:
+        """checks on a proposed final answer. returns feedback to send back, or None to accept"""
+        sql = inp.get("sql", "")
+        problems = semantic_check(sql, self.vocab)
+        if problems:
+            ans.trace.append({"sql": sql, "error": "review: " + "; ".join(problems)})
+            return "not accepted, fix and submit again: " + " | ".join(problems)
+        try:
+            _, rows, _, _ = run_query(self.con, sql)
+        except (GuardError, duckdb.Error):
+            return None  # _finalise reports the error
+        if not rows and not any(t.get("review") == "empty" for t in ans.trace):
+            ans.trace.append({"sql": sql, "review": "empty"})
+            return ("this query returns no rows. before concluding that nothing happened, check each filter "
+                    "with run_sql (e.g. SELECT DISTINCT on the filtered columns). if the result really is "
+                    "empty, call submit_answer again with the same sql")
+        return None
+
     def _tool_run_sql(self, ans: Answer, sql: str) -> dict:
+        problems = semantic_check(sql, self.vocab)
+        if problems:
+            ans.trace.append({"sql": sql, "error": "check: " + "; ".join(problems)})
+            return {"content": "not run: " + " | ".join(problems), "is_error": True}
         try:
             cols, rows, truncated, _ = run_query(self.con, sql)
         except GuardError as e:
