@@ -20,15 +20,29 @@ CATALOG_URL = "https://models.github.ai/catalog/models"
 OPEN_WEIGHT_PUBLISHERS = ("meta", "mistral", "microsoft", "deepseek", "cohere", "ai21", "qwen", "alibaba", "nvidia")
 
 
+class CatalogError(RuntimeError):
+    pass
+
+
 def fetch_catalog(token: str | None = None, transport: httpx.BaseTransport | None = None) -> list[dict]:
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    with httpx.Client(timeout=30, transport=transport) as c:
+    with httpx.Client(timeout=30, transport=transport, follow_redirects=True) as c:
         r = c.get(CATALOG_URL, headers=headers)
-        r.raise_for_status()
+    body = r.text or ""
+    if r.status_code >= 400:
+        raise CatalogError(f"catalog request failed: HTTP {r.status_code}: {body[:300]}")
+    try:
         data = r.json()
-    return data if isinstance(data, list) else data.get("data", [])
+    except ValueError:
+        raise CatalogError(
+            f"catalog returned non-json (HTTP {r.status_code}, content-type "
+            f"{r.headers.get('content-type', '?')}, {len(body)} bytes): {body[:200]!r}") from None
+    items = data if isinstance(data, list) else (data.get("data") or data.get("models") or [])
+    if not isinstance(items, list):
+        raise CatalogError(f"unexpected catalog shape: {str(data)[:200]}")
+    return items
 
 
 def tool_models(catalog: list[dict]) -> list[dict]:
@@ -63,7 +77,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--any-publisher", action="store_true", help="don't prefer open-weight models")
     args = p.parse_args(argv)
 
-    catalog = fetch_catalog(os.environ.get("GITHUB_TOKEN") or os.environ.get("OPENAI_API_KEY"))
+    explicit = args.model and args.model != "auto"
+    try:
+        catalog = fetch_catalog(os.environ.get("GITHUB_TOKEN") or os.environ.get("OPENAI_API_KEY"))
+    except (CatalogError, httpx.HTTPError) as e:
+        if args.list:
+            print(f"_could not read the github models catalog: {e}_")
+            return 0
+        if explicit:
+            # the inference call itself will tell us if the id is wrong
+            print(f"warning: {e}. using {args.model} without checking it", file=sys.stderr)
+            print(args.model)
+            return 0
+        print(f"{e}\ncould not pick a model automatically. re-run with a model id, e.g. "
+              f"model: openai/gpt-4.1-mini (see https://github.com/marketplace?type=models)", file=sys.stderr)
+        return 1
     if args.list:
         print(table(catalog))
         return 0

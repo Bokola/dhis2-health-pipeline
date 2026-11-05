@@ -88,7 +88,7 @@ jobs:
           echo "OPENAI_API_KEY=$GITHUB_TOKEN" >> "$GITHUB_ENV"
           {
             echo "### Tool-calling models on GitHub Models"
-            uv run python -m assistant.github_models --list
+            uv run python -m assistant.github_models --list || true
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- backend: ollama inside the runner (open weights, cpu only) ----------

@@ -133,3 +133,28 @@ def test_github_models_picker_prefers_low_tier_open_tool_models():
     assert pick(cat) == "mistral-ai/mistral-small"
     assert pick(cat, prefer_open=False) in {"openai/gpt-4.1-mini", "mistral-ai/mistral-small"}  # never the high tier
     assert "llama-3.1-70b" not in table(cat)
+
+
+def test_catalog_follows_redirects_and_reports_non_json(monkeypatch, capsys):
+    import pytest
+    from assistant import github_models as gm
+
+    def handler(req):
+        if req.url.path == "/catalog/models":
+            return httpx.Response(302, headers={"location": "https://models.github.ai/v2/catalog"})
+        assert req.headers["x-github-api-version"]
+        return httpx.Response(200, json=[{"id": "meta/x", "capabilities": ["tool-calling"], "rate_limit_tier": "low"}])
+    assert gm.fetch_catalog(transport=httpx.MockTransport(handler))[0]["id"] == "meta/x"
+
+    empty = httpx.MockTransport(lambda req: httpx.Response(200, text="", headers={"content-type": "text/html"}))
+    with pytest.raises(gm.CatalogError, match="non-json"):
+        gm.fetch_catalog(transport=empty)
+
+    # explicit model: a broken catalog must not block the run
+    def broken(*a, **k):
+        raise gm.CatalogError("non-json")
+    monkeypatch.setattr(gm, "fetch_catalog", broken)
+    assert gm.main(["--model", "openai/gpt-4.1-mini"]) == 0
+    assert capsys.readouterr().out.strip() == "openai/gpt-4.1-mini"
+    assert gm.main(["--model", "auto"]) == 1
+    assert gm.main(["--list"]) == 0
