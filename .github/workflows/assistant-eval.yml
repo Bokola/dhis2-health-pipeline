@@ -18,7 +18,7 @@ on:
         type: string
         default: ""
       only:
-        description: "comma-separated question ids, empty = all 32"
+        description: "question ids like q01,q13 (not a model name); empty = all 32"
         type: string
         default: ""
       repeats:

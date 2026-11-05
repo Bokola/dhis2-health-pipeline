@@ -169,5 +169,7 @@ def test_catalog_follows_redirects_and_reports_non_json(monkeypatch, capsys):
     monkeypatch.setattr(gm, "fetch_catalog", broken)
     assert gm.main(["--model", "openai/gpt-4.1-mini"]) == 0
     assert capsys.readouterr().out.strip() == "openai/gpt-4.1-mini"
-    assert gm.main(["--model", "auto"]) == 1
+    capsys.readouterr()
+    assert gm.main(["--model", "auto"]) == 0
+    assert capsys.readouterr().out.strip() == gm.FALLBACK_MODEL
     assert gm.main(["--list"]) == 0

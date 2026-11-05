@@ -17,6 +17,8 @@ import sys
 import httpx
 
 CATALOG_URL = "https://models.github.ai/catalog/models"
+# used when the catalog can't be read: documented as a tool-calling model
+FALLBACK_MODEL = os.environ.get("GITHUB_MODELS_FALLBACK", "openai/gpt-4.1")
 OPEN_WEIGHT_PUBLISHERS = ("meta", "mistral", "microsoft", "deepseek", "cohere", "ai21", "qwen", "alibaba", "nvidia")
 
 
@@ -109,9 +111,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"warning: {e}. using {args.model} without checking it", file=sys.stderr)
             print(args.model)
             return 0
-        print(f"{e}\ncould not pick a model automatically. re-run with a model id, e.g. "
-              f"model: openai/gpt-4.1-mini (see https://github.com/marketplace?type=models)", file=sys.stderr)
-        return 1
+        # the catalog is only a convenience: fall back to a known model and let inference decide
+        print(f"warning: {e}\nusing fallback model {FALLBACK_MODEL}. to choose another, set the model input "
+              f"(ids are listed at https://github.com/marketplace?type=models)", file=sys.stderr)
+        print(FALLBACK_MODEL)
+        return 0
     if args.list:
         print(table(catalog))
         return 0
