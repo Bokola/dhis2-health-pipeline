@@ -24,25 +24,45 @@ class CatalogError(RuntimeError):
     pass
 
 
-def fetch_catalog(token: str | None = None, transport: httpx.BaseTransport | None = None) -> list[dict]:
-    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    with httpx.Client(timeout=30, transport=transport, follow_redirects=True) as c:
-        r = c.get(CATALOG_URL, headers=headers)
+# the catalog has answered differently across api versions (one replies just "OK"),
+# so try the current version, the older one, then the inference listing
+CATALOG_ATTEMPTS = [
+    (CATALOG_URL, "2026-03-10"),
+    (CATALOG_URL, "2022-11-28"),
+    (CATALOG_URL, None),
+    ("https://models.github.ai/inference/models", None),
+]
+
+
+def _parse_items(r: httpx.Response) -> list[dict]:
     body = r.text or ""
     if r.status_code >= 400:
-        raise CatalogError(f"catalog request failed: HTTP {r.status_code}: {body[:300]}")
+        raise CatalogError(f"HTTP {r.status_code}: {body[:200]}")
     try:
         data = r.json()
     except ValueError:
-        raise CatalogError(
-            f"catalog returned non-json (HTTP {r.status_code}, content-type "
-            f"{r.headers.get('content-type', '?')}, {len(body)} bytes): {body[:200]!r}") from None
+        raise CatalogError(f"non-json (HTTP {r.status_code}, content-type "
+                           f"{r.headers.get('content-type', '?')}, {len(body)} bytes): {body[:80]!r}") from None
     items = data if isinstance(data, list) else (data.get("data") or data.get("models") or [])
-    if not isinstance(items, list):
-        raise CatalogError(f"unexpected catalog shape: {str(data)[:200]}")
+    if not isinstance(items, list) or not items or not all(isinstance(m, dict) and m.get("id") for m in items):
+        raise CatalogError(f"no model list in response: {str(data)[:200]}")
     return items
+
+
+def fetch_catalog(token: str | None = None, transport: httpx.BaseTransport | None = None) -> list[dict]:
+    errors = []
+    with httpx.Client(timeout=30, transport=transport, follow_redirects=True) as c:
+        for url, version in CATALOG_ATTEMPTS:
+            headers = {"Accept": "application/vnd.github+json"}
+            if version:
+                headers["X-GitHub-Api-Version"] = version
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            try:
+                return _parse_items(c.get(url, headers=headers))
+            except (CatalogError, httpx.HTTPError) as e:
+                errors.append(f"{url} (api version {version or 'none'}): {e}")
+    raise CatalogError("could not read the github models catalog:\n  " + "\n  ".join(errors))
 
 
 def tool_models(catalog: list[dict]) -> list[dict]:

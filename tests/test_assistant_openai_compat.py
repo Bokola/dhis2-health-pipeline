@@ -139,16 +139,29 @@ def test_catalog_follows_redirects_and_reports_non_json(monkeypatch, capsys):
     import pytest
     from assistant import github_models as gm
 
-    def handler(req):
+    model = [{"id": "meta/x", "capabilities": ["tool-calling"], "rate_limit_tier": "low"}]
+
+    def redirecting(req):
         if req.url.path == "/catalog/models":
             return httpx.Response(302, headers={"location": "https://models.github.ai/v2/catalog"})
-        assert req.headers["x-github-api-version"]
-        return httpx.Response(200, json=[{"id": "meta/x", "capabilities": ["tool-calling"], "rate_limit_tier": "low"}])
-    assert gm.fetch_catalog(transport=httpx.MockTransport(handler))[0]["id"] == "meta/x"
+        return httpx.Response(200, json=model)
+    assert gm.fetch_catalog(transport=httpx.MockTransport(redirecting))[0]["id"] == "meta/x"
 
-    empty = httpx.MockTransport(lambda req: httpx.Response(200, text="", headers={"content-type": "text/html"}))
-    with pytest.raises(gm.CatalogError, match="non-json"):
-        gm.fetch_catalog(transport=empty)
+    # what actions saw: plain "OK" for one api version; the next attempt must be tried
+    seen = []
+
+    def ok_then_json(req):
+        seen.append(req.headers.get("x-github-api-version"))
+        if req.headers.get("x-github-api-version") == "2026-03-10":
+            return httpx.Response(200, text="OK\r\n", headers={"content-type": "text/plain"})
+        return httpx.Response(200, json=model)
+    assert gm.fetch_catalog(transport=httpx.MockTransport(ok_then_json))[0]["id"] == "meta/x"
+    assert seen == ["2026-03-10", "2022-11-28"]
+
+    always_ok = httpx.MockTransport(lambda req: httpx.Response(200, text="OK\r\n"))
+    with pytest.raises(gm.CatalogError, match="non-json") as err:
+        gm.fetch_catalog(transport=always_ok)
+    assert "inference/models" in str(err.value)  # every attempt is reported
 
     # explicit model: a broken catalog must not block the run
     def broken(*a, **k):
