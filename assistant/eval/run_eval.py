@@ -23,9 +23,11 @@ from assistant.eval.scoring import results_match
 QUESTIONS_PATH = Path(__file__).with_name("questions.yaml")
 
 
-def load_questions(path: Path = QUESTIONS_PATH, only: set[str] | None = None) -> list[dict]:
+def load_questions(path: Path = QUESTIONS_PATH, only: set[str] | None = None,
+                   tags: set[str] | None = None) -> list[dict]:
     qs = yaml.safe_load(path.read_text())["questions"]
-    return [q for q in qs if not only or q["id"] in only]
+    qs = [q for q in qs if not only or q["id"] in only]
+    return [q for q in qs if not tags or tags & set(q.get("tags", []))]
 
 
 def score(q: dict, ans: Answer, con) -> tuple[bool, str]:
@@ -47,6 +49,7 @@ def run(assistant: Assistant, questions: list[dict], out_root: str, repeats: int
     out_dir = Path(out_root) / "assistant_eval" / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
     results, stopped = [], None
+    total_runs, t_start = len(questions) * repeats, time.time()
     with open(out_dir / "results.jsonl", "w") as fh:
         for q in questions:
             if stopped:
@@ -66,7 +69,10 @@ def run(assistant: Assistant, questions: list[dict], out_root: str, repeats: int
                        "correct": ok, "detail": detail, "guard_blocks": guard_blocks, **ans.to_dict()}
                 results.append(rec)
                 fh.write(json.dumps(rec, default=str) + "\n")
-                print(f"{q['id']} rep{rep} {'PASS' if ok else 'FAIL'} {detail} ({ans.seconds}s, {ans.steps} steps)")
+                done = len(results)
+                eta = (time.time() - t_start) / done * (total_runs - done)
+                print(f"[{done}/{total_runs}] {q['id']} rep{rep} {'PASS' if ok else 'FAIL'} {detail} "
+                      f"({ans.seconds}s, {ans.steps} steps, ~{eta / 60:.0f} min left)", flush=True)
 
     summary = summarise(results, assistant.model)
     summary["stopped"] = stopped

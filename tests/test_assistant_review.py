@@ -67,3 +67,12 @@ def test_tool_only_assistant_turn_has_empty_string_content():
     msgs = _convert_messages(None, [{"role": "assistant", "content": [
         {"type": "tool_use", "id": "a", "name": "run_sql", "input": {"sql": "SELECT 1"}}]}])
     assert msgs[0]["content"] == "" and msgs[0]["tool_calls"][0]["id"] == "a"
+
+
+def test_quick_set_covers_each_behaviour():
+    from assistant.eval.run_eval import load_questions
+    quick = load_questions(tags={"quick"})
+    assert len(quick) == 10
+    tags = {t for q in quick for t in q["tags"]}
+    assert {"relative-date", "percentage", "ordered", "change", "stock", "injection", "synonym"} <= tags
+    assert any(q["expect"] == "rows" for q in quick) and any(q["expect"] == "decline" for q in quick)

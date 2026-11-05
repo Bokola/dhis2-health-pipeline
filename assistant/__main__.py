@@ -65,6 +65,9 @@ def main(argv: list[str] | None = None) -> int:
     e = sub.add_parser("eval")
     e.add_argument("--only", default="", help="comma separated question ids")
     e.add_argument("--repeats", type=int, default=1)
+    e.add_argument("--tags", default="", help="comma separated tags, e.g. quick (10-question smoke set)")
+    p.add_argument("--compact", action="store_true",
+                   help="send fewer result rows back to the model: faster on cpu, needed for small context limits")
     args = p.parse_args(argv)
 
     if args.provider == "anthropic":
@@ -85,6 +88,9 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
+    if args.compact:
+        import assistant.agent as agent_mod
+        agent_mod.ROWS_SHOWN_TO_MODEL, agent_mod.MAX_RESULT_CHARS = 15, 4000
     bot = Assistant(con, ctx, client=client, model=model)
 
     if args.cmd == "ask":
@@ -98,7 +104,12 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "eval":
         from assistant.eval.run_eval import load_questions, run
         only = {x.strip() for x in args.only.split(",") if x.strip()} or None
-        summary = run(bot, load_questions(only=only), args.output_dir, repeats=args.repeats)
+        tags = {x.strip() for x in args.tags.split(",") if x.strip()} or None
+        questions = load_questions(only=only, tags=tags)
+        if not questions:
+            print("no questions match --only/--tags", file=sys.stderr)
+            return 2
+        summary = run(bot, questions, args.output_dir, repeats=args.repeats)
         return 0 if summary["total"] else 1
     return 0
 

@@ -13,6 +13,10 @@ on:
         description: "model id. github-models: 'auto' picks a free low-tier tool-calling model; ollama: e.g. qwen2.5:7b; anthropic: e.g. claude-sonnet-5-5"
         type: string
         default: auto
+      tags:
+        description: "'quick' = 10-question smoke set, empty = all"
+        type: string
+        default: ""
       only:
         description: "comma-separated question ids, empty = all 32"
         type: string
@@ -41,6 +45,7 @@ jobs:
       BACKEND: ${{ inputs.backend || 'github-models' }}
       MODEL_INPUT: ${{ inputs.model || 'auto' }}
       ONLY: ${{ inputs.only }}
+      TAGS: ${{ inputs.tags }}
       REPEATS: ${{ inputs.repeats || '1' }}
 
     steps:
@@ -134,7 +139,7 @@ jobs:
       - name: Run evaluation
         run: |
           uv run python -m assistant --provider "$ASSISTANT_PROVIDER" --model "$ASSISTANT_MODEL" \
-            eval --only "$ONLY" --repeats "$REPEATS"
+            eval --only "$ONLY" --tags "$TAGS" --repeats "$REPEATS"
 
       - name: Publish report
         if: always()
